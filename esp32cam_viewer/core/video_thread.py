@@ -1,4 +1,4 @@
-import cv2
+import cv2, os
 import numpy as np
 from PyQt5.QtCore import QThread, pyqtSignal, QDateTime
 from PIL import ImageFont, ImageDraw, Image
@@ -175,19 +175,28 @@ class VideoStreamThread(QThread):
         self.test_last_status = f"{status_type}:{message}"  # 测试记录
         self.status_signal.emit(status_type, message)
 
+    def _get_video_writer(self, filepath, fps, frame_size):
+        """创建合适的VideoWriter"""
+        fourcc = self._get_fourcc(filepath)
+        return cv2.VideoWriter(filepath, fourcc, fps, frame_size)
+
+    def _get_fourcc(self, filepath):
+        ext = os.path.splitext(filepath)[1].lower()
+        codecs = {
+            '.avi': 'XVID',
+            '.mp4': 'mp4v',  # 或 'avc1' 如果有安装
+            '.mov': 'XVID'
+        }
+        return cv2.VideoWriter_fourcc(*codecs.get(ext, 'XVID'))
+
     # ---------- 公共控制接口 ----------
     def start_recording(self, filepath):
         """
         开始录制视频
         :param filepath: 视频保存路径（建议.avi格式）
         """
-        # 初始化视频写入器（XVID编码，20fps，640x480分辨率） ！！！注意分辨率
-        self.writer = cv2.VideoWriter(
-            filepath,
-            cv2.VideoWriter_fourcc(*'XVID'),
-            20.0,
-            (640, 480)
-        )
+        # 初始化视频写入器（合适的编码，20fps，640x480分辨率） ！！！注意分辨率
+        self.writer = self._get_video_writer(filepath, 20.0, (640, 480))
         if not self.writer.isOpened():
             self._emit_status("error", "无法创建视频文件")
             return

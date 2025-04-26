@@ -79,11 +79,15 @@ class CameraApp(QMainWindow):
         # 初始化视频显示区域（右）
         self.setup_video_display()
 
+        # 设置左右两部分的比例为2:3 ，因为左边固定宽度，右边自适应，所以调整比例没有影响窗口拓展时的布局
+        # self.main_layout.setStretch(0, 4)  # 左侧控制面板占比2
+        # self.main_layout.setStretch(1, 6)  # 右侧视频显示占比3
+
     def setup_control_panel(self):
         """初始化左侧控制面板"""
         # 控制面板容器
         control_panel = QWidget()
-        control_panel.setFixedWidth(300)                        # 固定宽度      
+        control_panel.setFixedWidth(400)                        # 固定宽度      
         control_layout = QVBoxLayout(control_panel)             
         control_layout.setSpacing(15)                           # 设置组件间距    
         
