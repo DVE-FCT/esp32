@@ -1,4 +1,4 @@
-import cv2, os
+import cv2, os, time
 import numpy as np
 from PyQt5.QtCore import QThread, pyqtSignal, QDateTime
 from PIL import ImageFont, ImageDraw, Image
@@ -24,9 +24,14 @@ class VideoStreamThread(QThread):
         super().__init__()
         # 视频流URL（MJPG格式）
         if ip and port:
-            self.stream_url = f"http://{ip}:{port}/stream"  # 网络摄像头
+            self.stream_url = f"http://{ip}:{port}/"  # 网络摄像头
         else:
             self.stream_url = device  # 本地摄像头编号
+
+        # 添加FPS计算相关变量
+        self._fps_counter_start = None
+        self._fps_frame_count = 0
+        self._current_fps = 0.0
 
         # 线程控制标志
         self._is_running = True    # 控制线程运行
@@ -35,7 +40,7 @@ class VideoStreamThread(QThread):
         # 视频录制相关属性
         self.writer = None                  # 视频写入器对象
         self.recording_start_time = 0       # 录制开始时间戳(毫秒)
-        self.indicator_radius = 12          # 红点半径
+        self.indicator_radius = 8          # 红点半径
         self.radius_increasing = True       # 红点半径变化方向
 
         # 测试用属性（验证代码执行路径）
@@ -48,6 +53,7 @@ class VideoStreamThread(QThread):
         功能：持续获取视频帧并处理
         """
         self._emit_status("debug", "视频流线程启动")
+        self._fps_counter_start = time.time()  # 初始化FPS计时器
 
         # 创建视频捕获对象
         cap = cv2.VideoCapture(self.stream_url)
@@ -65,7 +71,10 @@ class VideoStreamThread(QThread):
                 self._emit_status("warning", "视频帧获取失败")
                 continue
 
-            # 录制处理逻辑
+            # 更新FPS计算
+            self._update_fps()
+            
+            # 处理帧(添加时间戳、FPS显示和录制状态)
             processed_frame = self._process_frame(frame)
 
             # 发送处理后的帧（BGR转RGB）
@@ -78,25 +87,6 @@ class VideoStreamThread(QThread):
 
         self._emit_status("debug", "视频流线程停止")
 
-    def _process_frame(self, frame):
-        """
-        帧处理函数（内部方法）
-        :param frame: 原始视频帧
-        :return: 处理后的视频帧
-        """
-        # 始终绘制时间戳
-        frame = self._add_timestamp(frame)
-
-        # 录制状态处理
-        if self._recording:
-            # 写入视频文件
-            if self.writer:
-                self.writer.write(frame)
-
-            # 添加录制指示器
-            frame = self._add_recording_indicator(frame)
-
-        return frame
     
     def _add_timestamp(self, frame):
         """
@@ -128,13 +118,13 @@ class VideoStreamThread(QThread):
 
         # 红点闪烁逻辑：1秒开 1秒关（根据当前秒数的奇偶）
         if elapsed_seconds % 2 == 0:
-            cv2.circle(frame, (frame.shape[1] - 50, 50), self.indicator_radius, (0, 0, 255), -1)
+            cv2.circle(frame, (frame.shape[1] - 50, frame.shape[0] - 38), self.indicator_radius, (0, 0, 255), -1)
 
         # 中文 & 英文文字使用PIL绘制（录制时长 + 时间戳）
         frame = self._draw_text_with_pil(
             frame,
             f"已录制: {elapsed_seconds}s",
-            position=(frame.shape[1] - 200, 30),  # 右上角
+            position=(frame.shape[1] - 200, frame.shape[0] - 50),  # 右下角
             font_size=24,
             color=(255, 255, 255)
         )
@@ -188,15 +178,55 @@ class VideoStreamThread(QThread):
             '.mov': 'XVID'
         }
         return cv2.VideoWriter_fourcc(*codecs.get(ext, 'XVID'))
+    
+    def _update_fps(self):
+        """计算并更新当前帧率"""
+        self._fps_frame_count += 1
+        
+        # 每1秒计算一次FPS
+        elapsed = time.time() - self._fps_counter_start
+        if elapsed >= 1.0:  # 每1秒更新一次FPS值
+            self._current_fps = self._fps_frame_count / elapsed
+            self._fps_frame_count = 0
+            self._fps_counter_start = time.time()
+
+    def _process_frame(self, frame):
+        """帧处理函数 - 添加FPS显示"""
+        # 添加时间戳
+        frame = self._add_timestamp(frame)
+        
+        # 添加FPS显示
+        frame = self._add_fps_display(frame)
+        
+        # 录制状态处理
+        if self._recording:
+            if self.writer:
+                self.writer.write(frame)
+            frame = self._add_recording_indicator(frame)
+            
+        return frame
+
+    def _add_fps_display(self, frame):
+        """在右上角添加FPS显示"""
+        fps_text = f"FPS: {self._current_fps:.1f}"
+        frame = self._draw_text_with_pil(
+            frame,
+            fps_text,
+            position=(frame.shape[1] - 150, 30),  # 右上角位置
+            font_size=18,
+            color=(0, 255, 0)  # 绿色文字
+        )
+        return frame
 
     # ---------- 公共控制接口 ----------
-    def start_recording(self, filepath):
+    def start_recording(self, filepath, FPS=6.0):
         """
         开始录制视频
+        :param FPS: 录制帧率
         :param filepath: 视频保存路径（建议.avi格式）
         """
-        # 初始化视频写入器（合适的编码，20fps，640x480分辨率） ！！！注意分辨率
-        self.writer = self._get_video_writer(filepath, 20.0, (640, 480))
+        # 初始化视频写入器（合适的编码，6fps，640x480分辨率） ！！！注意分辨率
+        self.writer = self._get_video_writer(filepath, FPS, (640, 480))
         if not self.writer.isOpened():
             self._emit_status("error", "无法创建视频文件")
             return

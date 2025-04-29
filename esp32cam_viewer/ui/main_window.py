@@ -10,6 +10,7 @@ from datetime import datetime
 
 # 导入自定义模块
 from core.video_thread import VideoStreamThread
+from core.control_thread import ControlThread
 from core.camera_manager import CameraManager
 from core.camera_display import CameraDisplay 
 from utils.logger import setup_logger 
@@ -30,13 +31,18 @@ class CameraApp(QMainWindow):
         
         # 初始化成员变量
         self.video_thread = None                # 视频流处理线程
+        self.control_thread = None              # 控制线程实例
+        
+        self.light_state = False                # 灯光状态跟踪
         self.recording = False                  # 录制状态标志
+
         self.save_path = ""                     # 视频保存路径
         self.current_camera = None              # 当前连接的摄像头信息
         self.camera_manager = CameraManager()   # 摄像头管理器
 
         self.reconnect_timer = None             # 自动重连定时器
         self.frame_counter = 0                  # 帧计数器（用于性能监控）
+        self.FPS = 6.0                          # 录制帧率，预估的帧率防止存储的视频过快
         
         # 创建data目录（如果不存在）
         self.data_dir = os.path.join(os.getcwd(), "data")
@@ -115,7 +121,7 @@ class CameraApp(QMainWindow):
         
         # 连接/断开按钮
         self.btn_connect = QPushButton("连接摄像头")
-        self.btn_connect.setStyleSheet("background-color: #4CAF50; color: white;")
+        # self.btn_connect.setStyleSheet("background-color: #4CAF50; color: white;")
         
         # 摄像头管理按钮
         self.btn_add_camera = QPushButton("添加当前配置")
@@ -133,7 +139,7 @@ class CameraApp(QMainWindow):
         # 录制控制按钮
         self.btn_record = QPushButton("开始录制")
         self.btn_record.setEnabled(False)  # 初始禁用
-        self.btn_record.setStyleSheet("background-color: #f44336; color: white;")
+        # self.btn_record.setStyleSheet("background-color: #f44336; color: white;")
         
         # 保存路径设置
         self.btn_save = QPushButton("设置保存路径")
@@ -146,6 +152,26 @@ class CameraApp(QMainWindow):
         record_layout.addWidget(self.btn_save)
         record_layout.addWidget(self.record_status)
         
+        # --- 灯光控制区域 ---
+        light_group = QWidget()
+        light_layout = QVBoxLayout(light_group)
+        light_layout.setSpacing(8)
+        
+        self.btn_light = QPushButton("开灯")
+        self.btn_light.setObjectName("btn_light")      # 关键设置
+        # self.btn_light.setStyleSheet("background-color: #4CAF50; color: white;")
+        light_layout.addWidget(self.btn_light)
+        
+        # --- 拍照控制区域 ---
+        capture_group = QWidget()
+        capture_layout = QVBoxLayout(capture_group)
+        capture_layout.setSpacing(8)
+        
+        self.btn_capture = QPushButton("拍照")
+        self.btn_capture.setObjectName("btn_capture")  # 关键设置
+        # self.btn_capture.setStyleSheet("background-color: #4CAF50; color: white;")
+        capture_layout.addWidget(self.btn_capture)
+
         # --- 日志显示区域 ---
         self.log_display = QTextEdit()
         self.log_display.setReadOnly(True)                    # 只读模式
@@ -153,6 +179,8 @@ class CameraApp(QMainWindow):
         
         # 将所有组件添加到控制面板
         control_layout.addWidget(camera_group)
+        control_layout.addWidget(light_group)
+        control_layout.addWidget(capture_group)
         control_layout.addWidget(record_group)
         control_layout.addWidget(QLabel("系统日志:"))
         control_layout.addWidget(self.log_display)
@@ -177,7 +205,7 @@ class CameraApp(QMainWindow):
         # 状态信息标签
         self.status_label = QLabel("准备连接摄像头...")
         self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setStyleSheet("font-size: 16px; color: #666;")
+        # self.status_label.setStyleSheet("font-size: 16px; color: #666;")
         
         # 添加到布局
         video_layout.addWidget(self.video_display)
@@ -189,11 +217,15 @@ class CameraApp(QMainWindow):
     def setup_connections(self):
         """设置所有信号槽连接"""
         # 按钮信号连接
-        self.btn_connect.clicked.connect(self.connect_camera)
-        self.btn_record.clicked.connect(self.toggle_recording)
-        self.btn_save.clicked.connect(self.select_save_path)
-        self.btn_add_camera.clicked.connect(self.add_camera)
-        self.btn_remove_camera.clicked.connect(self.remove_camera)
+        self.btn_connect.clicked.connect(self.connect_camera)     # 连接/断开摄像头按钮
+        self.btn_record.clicked.connect(self.toggle_recording)    # 开始/停止录制按钮
+        self.btn_save.clicked.connect(self.select_save_path)      # 设置保存路径按钮
+        self.btn_add_camera.clicked.connect(self.add_camera)      # 添加摄像头按钮
+        self.btn_remove_camera.clicked.connect(self.remove_camera)# 移除摄像头按钮
+
+        self.btn_light.clicked.connect(self.LED_4_control)        # 开/关灯按钮
+        self.btn_capture.clicked.connect(self.capture_image)      # 拍照按钮
+
         
         # 摄像头选择变化信号
         self.cam_selector.currentTextChanged.connect(self.switch_camera)
@@ -234,52 +266,79 @@ class CameraApp(QMainWindow):
 
     def connect_camera(self):
         """连接/断开摄像头"""
-        if self.video_thread:
-            # 如果已连接，则断开连接
+        if self.video_thread and self.video_thread.isRunning():
             self.disconnect_camera()
             return
         
-        # 获取输入参数
         ip = self.ip_input.text().strip()
         port = self.port_input.text().strip()
-        
-        # 验证输入
-        if not ip or not port:
-            self.logger.log("错误：请输入有效的IP和端口", "ERROR")
-            return
-            
-        self.logger.log(f"正在连接 {ip}:{port}...", "INFO")
+        use_local = not (ip and port)
         
         try:
-            # 创建并启动视频线程
-            self.video_thread = VideoStreamThread(device=0)  # 改成本地摄像头
-            #self.video_thread = VideoStreamThread(ip, port)
+            # 创建视频线程（网络或本地）
+            self.video_thread = VideoStreamThread(device=0) if use_local else VideoStreamThread(ip, port)
             self.video_thread.frame_ready.connect(self.update_video_frame)
             self.video_thread.status_signal.connect(self.handle_thread_status)
             self.video_thread.start()
+            self.logger.log("视频线程已启动", "DEBUG")
+
+            # 创建控制线程（网络摄像头才需要）
+            if not use_local:
+                # 先断开现有连接
+                if self.control_thread:
+                    self.control_thread.stop()
+                self.control_thread = ControlThread({"ip": ip, "port": port})
+                # 控制线程信号连接
+                self.control_thread.command_sent.connect(self.on_control_result)
+                self.control_thread.connection_error.connect(self.on_control_error)
+                self.control_thread.connection_status.connect(self.on_control_connection_changed)
+                self.control_thread.light_state_changed.connect(self.on_light_state_changed)
+                self.control_thread.start()
+                self.logger.log("控制线程已启动", "DEBUG")
             
             # 更新UI状态
+            connection_text = "本地摄像头" if use_local else f"{ip}:{port}"
+            self.logger.log(f"摄像头连接中: {connection_text}", "INFO")
+            
+            # UI状态更新
             self.video_display.set_connected(True)
             self.btn_connect.setText("断开连接")
             self.btn_connect.setStyleSheet("background-color: #FF5722; color: white;")
             self.btn_record.setEnabled(True)
-            self.status_label.setText(f"已连接: {ip}:{port}")
-            self.current_camera = {"ip": ip, "port": port}
+            self.status_label.setText(f"连接中: {connection_text}")
             
-            # 停止自动重连定时器
-            if self.reconnect_timer.isActive():             # 防止重复启动
+            # 保存当前摄像头信息
+            self.current_camera = {
+                "type": "local" if use_local else "network",
+                "ip": None if use_local else ip,
+                "port": None if use_local else port
+            }
+            
+            # 停止自动重连
+            if hasattr(self, 'reconnect_timer') and self.reconnect_timer.isActive():
                 self.reconnect_timer.stop()
-                self.logger.log("停止自动重连定时器，因为已连接摄像头", "INFO")
-
-            self.logger.log("摄像头连接成功")
-            
+                self.logger.log("自动重连已停止", "DEBUG")
+                
         except Exception as e:
-            self.logger.log(f"连接失败: {str(e)}", "ERROR")
+            error_msg = f"连接失败: {str(e)}"
+            self.logger.log(error_msg, "ERROR")
+            
+            # 失败状态处理
             self.video_display.set_connected(False)
-
-            # 启动自动重连定时器
-            self.reconnect_timer.start()
-            self.logger.log("启动自动重连定时器", "INFO")
+            self.status_label.setText("连接失败")
+            self.btn_connect.setText("连接摄像头")
+            self.btn_connect.setStyleSheet("")
+            self.btn_record.setEnabled(False)
+            
+            # 启动自动重连（仅限网络摄像头）
+            if not use_local and hasattr(self, 'reconnect_timer'):
+                self.reconnect_timer.start()
+                self.logger.log("将在5秒后尝试自动重连", "INFO")
+            
+            # 清理线程
+            if hasattr(self, 'video_thread'):
+                self.video_thread.stop()
+                self.video_thread = None
 
     def disconnect_camera(self):
         """断开摄像头连接"""
@@ -291,6 +350,11 @@ class CameraApp(QMainWindow):
             # 停止视频线程
             self.video_thread.stop()
             self.video_thread = None
+
+            # 停止控制线程（如果存在）
+            if self.control_thread:
+                self.control_thread.stop()
+                self.control_thread = None
             
             # 更新UI状态
             self.video_display.set_connected(False)
@@ -321,7 +385,7 @@ class CameraApp(QMainWindow):
         self.save_path = self.generate_unique_filename()
         
         try:
-            self.video_thread.start_recording(self.save_path)
+            self.video_thread.start_recording(self.save_path, self.FPS)
             self.recording = True
             self.btn_record.setText("停止录制")
             self.record_status.setText("录制状态: 进行中")
@@ -340,20 +404,74 @@ class CameraApp(QMainWindow):
             self.status_label.setText(f"已保存: {self.save_path}")
             self.logger.log(f"视频已保存到: {self.save_path}")
 
+    def LED_4_control(self):
+        """灯光控制（分开实现）"""
+        # if not self.control_thread or not self.control_thread.is_connected:
+        #     self.logger.log("未连接到可控制的摄像头", "ERROR")
+        #     return
+        
+        if self.light_state == False:
+            success = self.control_thread.turn_light_on()
+            self.light_state = True
+            self.btn_light.setText("关灯")
+            self.btn_light.setStyleSheet("background-color: #FF5722; color: white;")
+        else:
+            success = self.control_thread.turn_light_off()
+            self.light_state = False
+            self.btn_light.setText("开灯")
+            self.btn_light.setStyleSheet("background-color: #4CAF50; color: white;")
+        
+        if success:
+            self.status_label.setText("灯光指令已发送")
+
+    def capture_image(self):
+        """拍照控制"""
+        success = self.control_thread.capture_photo()
+        if success:
+            self.status_label.setText("拍照指令已发送")
+
+    def on_control_result(self, cmd, success):
+        """指令结果处理"""
+        action_map = {
+            'L': ("开灯", "关灯失败"),
+            'l': ("关灯", "开灯失败"), 
+            'P': ("拍照成功", "拍照失败")
+        }
+        
+        if cmd in action_map:
+            msg = action_map[cmd][0] if success else action_map[cmd][1]
+            self.status_label.setText(msg)
+            self.logger.log(f"指令 {cmd} 执行{'成功' if success else '失败'}")
+
+    def on_light_state_changed(self, status):
+        self.status_label.setText(f"连接状态: {status}")
+
+    def on_control_error(self, error_msg):
+        """控制错误处理"""
+        self.logger.log(f"控制错误: {error_msg}", "ERROR")
+        self.status_label.setText("控制错误")
+
+    def on_control_connection_changed(self, connected):
+        """连接状态变化处理"""
+        if connected:
+            self.logger.log("控制连接已建立", "INFO")
+        else:
+            self.logger.log("控制连接已断开", "WARNING")
+
     def select_save_path(self):
         """自动生成唯一保存路径"""
-        self.save_path = self.generate_unique_filename()
-        self.logger.log(f"自动生成保存路径: {self.save_path}")
+        # self.save_path = self.generate_unique_filename()
+        # self.logger.log(f"自动生成保存路径: {self.save_path}")
         
         # 如果需要用户确认，可以改用：
-        """
         suggested_path = self.generate_unique_filename()
         path, _ = QFileDialog.getSaveFileName(
             self, "保存视频", suggested_path, "MP4 Files (*.mp4)"
         )
         if path:
             self.save_path = path
-        """
+            self.logger.log(f"用户选择保存路径: {self.save_path}")
+        
 
     def generate_unique_filename(self):
         """生成绝对不会重复的文件名"""

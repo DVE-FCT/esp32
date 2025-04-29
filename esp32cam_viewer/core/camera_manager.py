@@ -53,14 +53,21 @@ class CameraManager:
         保存当前配置到文件
         
         说明：
-        - 自动创建不存在的目录
+        - 自动创建不存在的目录（如果是带路径的文件名）
+        - 如果只是纯文件名，则保存到当前目录
         - 使用美观的格式化输出（indent=4）
         """
-        # 确保目录存在
-        os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
+        # 获取目录路径（如果是纯文件名则返回None）
+        dir_path = os.path.dirname(self.config_file)
         
+        # 只有当路径包含目录时才创建
+        if dir_path:  # 非空字符串时才创建目录
+            os.makedirs(dir_path, exist_ok=True)
+        
+        # 保存文件
         with open(self.config_file, 'w', encoding='utf-8') as f:
             json.dump(self.cameras, f, indent=4, ensure_ascii=False)
+
 
     def add_camera(self, name, ip, port):
         """

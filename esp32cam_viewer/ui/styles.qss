@@ -1,64 +1,68 @@
 /* 主窗口样式 - 淡绿色主题 */
 QMainWindow {
-    background-color: #F5FFFA;  /* 薄荷奶油色背景 */
+    background-color: #F5FFFA;
+    font-size: 15px;  /* 新增：基础字体大小 */
 }
 
 /* 视频显示区域 */
 CameraDisplay {
-    background-color: #E8F5E9;  /* 极淡绿色 */
-    border: 2px solid #C8E6C9;  /* 浅绿色边框 */
+    background-color: #E8F5E9;
+    border: 2px solid #C8E6C9;
     border-radius: 6px;
+    font-size: 15px;  /* 新增 */
 }
 
 /* 按钮基础样式 */
 QPushButton {
-    background-color: #81C784;  /* 柔和的绿色 */
-    color: #2E7D32;            /* 深绿色文字 */
-    border: 1px solid #66BB6A; /* 稍深的绿色边框 */
-    padding: 6px 12px;
+    background-color: #81C784;
+    color: #2E7D32;
+    border: 1px solid #66BB6A;
+    padding: 8px 15px;  /* 增大内边距 */
     border-radius: 5px;
-    min-width: 90px;
-    font-size: 13px;
+    min-width: 100px;   /* 增大最小宽度 */
+    font-size: 15px;    /* 原13px → 15px */
     font-family: "Microsoft YaHei";
 }
 
 /* 按钮悬停效果 */
 QPushButton:hover {
-    background-color: #66BB6A;  /* 稍亮的绿色 */
-    color: #1B5E20;            /* 更深的文字 */
+    background-color: #66BB6A;
+    color: #1B5E20;
 }
 
 /* 按钮按下效果 */
 QPushButton:pressed {
-    background-color: #4CAF50;  /* 标准绿色 */
+    background-color: #4CAF50;
     color: white;
 }
 
 /* 禁用状态按钮 */
 QPushButton:disabled {
-    background-color: #C8E6C9;  /* 非常淡的绿色 */
+    background-color: #C8E6C9;
     color: #A5D6A7;
 }
 
 /* 摄像头显示组件 */
 CameraDisplay {
-    background-color: #E8F5E9;  /* 与主区域一致 */
+    background-color: #E8F5E9;
     border: 2px solid #C8E6C9;
     border-radius: 6px;
     qproperty-alignment: 'AlignCenter';
+    font-size: 15px;  /* 新增 */
 }
 
 /* 连接状态文字样式 */
 CameraDisplay[connected="false"] {
-    color: #78909C;            /* 蓝灰色文字 */
+    color: #78909C;
     font-family: "Microsoft YaHei";
-    font-size: 18px;
+    font-size: 20px;  /* 原18px → 20px */
 }
 
 /* 控制面板样式 */
 QWidget#control_panel {
     background-color: #E8F5E9;
     border-right: 1px solid #C8E6C9;
+    font-size: 15px;  /* 新增 */
 }
 
 /* 文本输入框 */
@@ -66,8 +70,9 @@ QLineEdit {
     background-color: white;
     border: 1px solid #A5D6A7;
     border-radius: 4px;
-    padding: 5px;
+    padding: 6px;     /* 原5px → 6px */
     selection-background-color: #81C784;
+    font-size: 15px;  /* 新增 */
 }
 
 /* 下拉选择框 */
@@ -75,8 +80,9 @@ QComboBox {
     background-color: white;
     border: 1px solid #A5D6A7;
     border-radius: 4px;
-    padding: 5px;
-    min-width: 120px;
+    padding: 6px;     /* 原5px → 6px */
+    min-width: 140px; /* 原120px → 140px */
+    font-size: 15px;  /* 新增 */
 }
 
 /* 日志显示区域 */
@@ -85,7 +91,7 @@ QTextEdit {
     border: 1px solid #A5D6A7;
     border-radius: 4px;
     font-family: "Consolas", "Microsoft YaHei";
-    font-size: 12px;
+    font-size: 14px;  /* 原12px → 14px */
     color: #2E7D32;
 }
 
@@ -93,6 +99,29 @@ QTextEdit {
 QLabel#status_label {
     color: #2E7D32;
     font-family: "Microsoft YaHei";
-    font-size: 14px;
+    font-size: 16px;  /* 原14px → 16px */
     font-weight: bold;
+}
+
+
+/* 拍照按钮特殊样式 - 改为蓝绿色系 */
+QPushButton#btn_capture {
+    background-color: #26A69A;  /* 蓝绿色 */
+    color: white;
+    border: 1px solid #00897B;
+}
+
+QPushButton#btn_capture:hover {
+    background-color: #00897B;  /* 深蓝绿色悬停 */
+}
+
+/* 灯光按钮特殊样式 - 改为珊瑚色系 */
+QPushButton#btn_light {
+    background-color: #FF8A65;  /* 珊瑚色 */
+    color: white;
+    border: 1px solid #F4511E;
+}
+
+QPushButton#btn_light:hover {
+    background-color: #F4511E;  /* 深珊瑚色悬停 */
 }

@@ -36,6 +36,7 @@ while True:
     
     # 使用OpenCV显示图像，并设置窗口标题为"ESP32 Capture Image"
     cv2.imshow("ESP32 Capture Image", img)
+    print("Received image from IP:", IP[0])
     
     # 检查是否按下'q'键，如果是则退出循环
     if cv2.waitKey(1) == ord("q"):
