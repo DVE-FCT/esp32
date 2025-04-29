@@ -16,7 +16,7 @@ esp32cam_viewer/
 │   ├── __init__.py
 │   └── logger.py             # 日志系统
 └── esp32_cam_arduino 
-    └── esp32_cam_arduino.ino # arduino程序
+    └── esp32_cam_arduino.ino # arduino程序(测试)
 
 2. 运行方式：
 

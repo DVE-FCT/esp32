@@ -1,238 +1,234 @@
-"""
-摄像头视频显示组件 (CameraDisplay)
+# (假设文件名是 ui/camera_display.py 或类似)
 
-功能概述：
-1. 双状态显示：已连接时显示实时视频流，未连接时显示美观的占位界面
-2. 自适应布局：自动适应父容器尺寸变化
-3. 性能优化：马赛克背景缓存机制减少CPU开销
-4. 视觉增强：专业的文字渲染效果（带阴影）
-
-典型使用场景：
-- 网络摄像头监控系统
-- 安防监控平台
-
-类继承关系：
-QLabel -> CameraDisplay
-"""
 from PyQt5.QtWidgets import QLabel, QSizePolicy
-from PyQt5.QtGui import QPixmap, QPainter, QImage, QFont, QColor, QFontMetrics
-from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QPixmap, QPainter, QImage, QFont, QColor, QPen, QFontMetrics
+from PyQt5.QtCore import Qt, QSize, QRect
 import numpy as np
-
-# 仅测试导入
-import cv2
+import cv2 # 需要导入 cv2 用于颜色转换
 
 class CameraDisplay(QLabel):
     """
-    增强型视频显示组件
-    
+    增强型视频显示组件，支持显示视频帧、未连接状态，并能绘制ROI和参考线。
+
     :param parent: 父组件对象 (可选)
     :type parent: QWidget
-    
+
     属性说明：
     _connected: 当前连接状态 (bool)
     _mosaic_cache: 缓存的马赛克背景 (QImage)
+    current_frame: 当前存储的原始视频帧 (np.ndarray, BGR格式)
+    current_pixmap: 当前用于显示的缩放后的QPixmap
+    roi_rect: 当前设置的ROI区域 (x, y, w, h) 或 None，坐标基于原始帧
     """
     def __init__(self, parent=None):
         """
         初始化视频显示组件
-        
-        参数说明：
-        parent -- 父级组件 (默认None)
         """
         super().__init__(parent)
         # 基础设置
         self.setAlignment(Qt.AlignCenter)
-        self.setMinimumSize(640, 480)  # 最小显示尺寸
+        self.setMinimumSize(640, 480)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        
+
         # 状态变量初始化
         self._connected = False
         self._mosaic_cache = None
-        
-        # 初始显示状态
-        self.update_display()
+        self.current_frame = None     # 存储原始 BGR 帧
+        self.current_pixmap = None    # 存储准备显示的 QPixmap
+        self.roi_rect = None          # 存储 ROI 矩形 (x, y, w, h)
+
+        # 不再需要 self.update_display()，paintEvent 会处理初始状态
+        self.update() # 触发初始绘制
 
     def set_connected(self, connected):
         """
-        设置连接状态
-        
-        参数说明：
-        connected -- 是否连接成功 (bool)
-                     True: 显示视频流
-                     False: 显示未连接提示
-        
-        典型调用：
-        >>> display.set_connected(True)  # 连接成功时调用
-        >>> display.set_connected(False) # 断开连接时调用
+        设置连接状态，并触发界面更新。
         """
         if self._connected != connected:
             self._connected = connected
-            self.update_display()
+            if not connected:
+                # 断开连接时，清除帧和pixmap信息
+                self.current_frame = None
+                self.current_pixmap = None
+                self.roi_rect = None # 也清除ROI
+            # else: 连接成功时不需要立即做什么，等待 update_frame 或 paintEvent
+            self.update() # 请求重新绘制
 
-    def update_display(self):
+    def update_frame(self, frame: np.ndarray):
         """
-        根据当前状态更新显示内容
-        
-        内部逻辑：
-        - 未连接时：显示马赛克背景+提示文字
-        - 已连接时：清空显示等待视频帧
+        更新视频帧显示。接收 RGB 格式的 numpy 数组。
         """
+        # 存储原始 RGB 帧
+        self.current_frame = frame
+
+        if self._connected and self.current_frame is not None:
+            try:
+                h, w, ch = self.current_frame.shape
+                if ch == 3: # 确保是彩色图像
+                    bytes_per_line = 3 * w
+                    qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
+
+                    # 将 QImage 转换为 QPixmap 并缩放以适应 QLabel 的当前大小，保持纵横比
+                    # 将缩放后的结果存储在 self.current_pixmap 中，供 paintEvent 使用
+                    self.current_pixmap = QPixmap.fromImage(qt_image).scaled(
+                        self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+                    )
+                else: # 如果不是3通道图像，则清空 pixmap
+                    self.current_pixmap = None
+
+            except Exception as e:
+                print(f"[CameraDisplay] 转换帧时出错: {e}")
+                self.current_pixmap = None # 出错时清除
+
+            # 请求重新绘制控件，让 paintEvent 来显示图像和可能的叠加层
+            self.update()
+        # 如果未连接或帧为空，则不处理，paintEvent 会绘制相应状态
+
+    # +++ 新增方法 +++
+    def get_current_frame(self) -> np.ndarray | None:
+        """返回当前存储的原始 OpenCV 视频帧 (BGR格式)。"""
+        return self.current_frame
+
+    # +++ 新增方法 +++
+    def set_roi(self, roi_rect: tuple | None):
+        """
+        设置要在视频帧上绘制的ROI矩形区域。
+        :param roi_rect: 元组 (x, y, w, h) 或 None (不绘制)。坐标是相对于原始帧尺寸的。
+        """
+        if self.roi_rect != roi_rect:
+            self.roi_rect = roi_rect
+            self.update() # 请求重新绘制以显示或隐藏ROI
+
+    # --- 需要重写 paintEvent ---
+    def paintEvent(self, event):
+        """
+        重写绘制事件，用于绘制背景、视频帧、ROI边界和参考线。
+        """
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing) # 抗锯齿
+
+        # 绘制背景（无论连接与否，提供一个基础）
+        painter.fillRect(self.rect(), QColor(30, 30, 30)) # 深灰色背景
+
         if not self._connected:
-            self.show_disconnected_state()
+            # --- 绘制未连接状态 ---
+            # 检查或创建马赛克缓存
+            if self._mosaic_cache is None or self._mosaic_cache.size() != self.size():
+                 if self.size().width() > 0 and self.size().height() > 0: # 确保尺寸有效
+                     self._mosaic_cache = self.create_mosaic_background()
+                 else:
+                     self._mosaic_cache = None # 尺寸无效则不创建
+
+            # 绘制马赛克背景（如果可用）
+            if self._mosaic_cache:
+                 painter.drawImage(0, 0, self._mosaic_cache)
+
+            # 绘制提示文字
+            self.draw_connection_text(painter, self.size())
+
         else:
-            self.clear()  # 使用QLabel的clear方法
+            # --- 绘制已连接状态 ---
+            if self.current_pixmap:
+                # 计算绘制Pixmap的位置，使其在QLabel中居中显示
+                px = (self.width() - self.current_pixmap.width()) // 2
+                py = (self.height() - self.current_pixmap.height()) // 2
+                painter.drawPixmap(px, py, self.current_pixmap)
 
-    def show_disconnected_state(self):
-        """
-        显示未连接状态UI
-        
-        实现细节：
-        1. 生成/获取缓存的马赛克背景
-        2. 在背景上绘制状态文字
-        3. 设置最终显示的Pixmap
-        """
-        # 背景生成（带尺寸变化检测）
-        if (self._mosaic_cache is None or 
-            self._mosaic_cache.size() != self.size()):
-            self._mosaic_cache = self.create_mosaic_background()
-        
-        # 创建带文字的Pixmap
-        pixmap = QPixmap(self._mosaic_cache)
-        painter = QPainter(pixmap)
-        try:
-            self.draw_connection_text(painter, pixmap.size())
-        finally:
-            painter.end()
-        
-        self.setPixmap(pixmap)
+                # --- 如果设置了ROI，则绘制ROI和参考线 ---
+                if self.roi_rect and self.current_frame is not None:
+                    frame_h, frame_w = self.current_frame.shape[:2]
+                    if frame_w > 0 and frame_h > 0:
+                        # 计算缩放比例
+                        scale_w = self.current_pixmap.width() / frame_w
+                        scale_h = self.current_pixmap.height() / frame_h
 
+                        # 计算缩放和平移后的ROI坐标 (基于原始帧ROI)
+                        scaled_roi_x = int(px + self.roi_rect[0] * scale_w)
+                        scaled_roi_y = int(py + self.roi_rect[1] * scale_h)
+                        scaled_roi_w = int(self.roi_rect[2] * scale_w)
+                        scaled_roi_h = int(self.roi_rect[3] * scale_h)
+
+                        # --- 绘制ROI的两条垂直边界线 (红色虚线) ---
+                        pen_roi = QPen(QColor(255, 0, 0)) # 红色
+                        pen_roi.setStyle(Qt.DashLine)     # 虚线
+                        pen_roi.setWidth(2)               # 线宽
+                        painter.setPen(pen_roi)
+                        painter.drawLine(scaled_roi_x, scaled_roi_y, scaled_roi_x, scaled_roi_y + scaled_roi_h)
+                        painter.drawLine(scaled_roi_x + scaled_roi_w, scaled_roi_y, scaled_roi_x + scaled_roi_w, scaled_roi_y + scaled_roi_h)
+
+                        # --- 绘制中心参考线 (蓝色实线) ---
+                        # 参考线在ROI内部的中心，其 x 坐标相对于 ROI 左边界是 roi_w / 2
+                        # 换算成相对于原始帧的 x 坐标是 roi_x + roi_w / 2
+                        ref_line_orig_x = self.roi_rect[0] + self.roi_rect[2] // 2
+                        # 将原始帧中的 x 坐标映射到显示的 pixmap 坐标
+                        scaled_ref_line_x = int(px + ref_line_orig_x * scale_w)
+
+                        pen_refline = QPen(QColor(0, 0, 255)) # 蓝色
+                        pen_refline.setStyle(Qt.SolidLine)   # 实线
+                        pen_refline.setWidth(1)             # 细线
+                        painter.setPen(pen_refline)
+                        # 从ROI顶部绘制到底部 (使用 scaled_roi_y 和 scaled_roi_h)
+                        painter.drawLine(scaled_ref_line_x, scaled_roi_y, scaled_ref_line_x, scaled_roi_y + scaled_roi_h)
+            else:
+                # 如果已连接但还没有帧数据，可以显示 "加载中..."
+                font = QFont("Microsoft YaHei", 18)
+                painter.setFont(font)
+                painter.setPen(QColor(200, 200, 200)) # 浅灰色
+                painter.drawText(self.rect(), Qt.AlignCenter, "视频加载中...")
+
+        # 不需要手动调用 painter.end()，因为 QPainter 在析构时会自动处理
+
+    # --- 以下方法保持不变 ---
     def create_mosaic_background(self):
-        """
-        创建马赛克纹理背景
-        
-        返回说明：
-        QImage -- 生成的背景图像
-        
-        算法说明：
-        - 使用numpy创建三维数组模拟RGB图像
-        - 20x20像素为基本马赛克块
-        - 每个块随机生成灰度值(50-100)
-        """
+        """创建马赛克纹理背景"""
         size = self.size()
         block_size = 20
+        # 使用 uint8 确保与 QImage 兼容
         img = np.zeros((size.height(), size.width(), 3), dtype=np.uint8)
-        
-        # 生成马赛克图案
+
         for y in range(0, size.height(), block_size):
             for x in range(0, size.width(), block_size):
-                color = np.random.randint(50, 100, 3)  # 随机灰度
+                # 生成稍暗的灰色，避免太亮
+                gray_val = np.random.randint(40, 80)
+                color = (gray_val, gray_val, gray_val)
                 img[y:y+block_size, x:x+block_size] = color
-                
-        # 转换为QImage (注意内存共享)
-        height, width, _ = img.shape
-        return QImage(img.data, width, height, 
-                     width * 3, QImage.Format_RGB888).copy()  # 必须copy保证数据独立
+
+        height, width, channel = img.shape
+        # BGR -> RGB (虽然这里是灰度，但保持通道顺序一致性)
+        # QImage 需要 RGB 格式
+        # img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) # 对于灰度其实BGR/RGB一样，但明确指定格式更好
+        # return QImage(img_rgb.data, width, height, width * 3, QImage.Format_RGB888).copy()
+        # 或者直接使用 Format_RGB888 因为我们的numpy数组就是 H x W x 3 (RGB顺序)
+        return QImage(img.data, width, height, width * 3, QImage.Format_RGB888).copy()
+
 
     def draw_connection_text(self, painter, size):
-        """
-        绘制连接状态文字
-        
-        参数说明：
-        painter -- QPainter对象
-        size    -- 绘制区域大小 (QSize)
-        
-        视觉效果：
-        - 微软雅黑24pt加粗字体
-        - 白色文字+黑色阴影
-        - 完全居中显示
-        """
+        """绘制连接状态文字"""
         font = QFont("Microsoft YaHei", 24, QFont.Bold)
         painter.setFont(font)
         text = "摄像头未连接"
-        
-        # 计算文字位置（精确居中）
+
         metrics = QFontMetrics(font)
-        text_rect = metrics.boundingRect(text)
-        x = (size.width() - text_rect.width()) // 2
-        y = (size.height() - text_rect.height()) // 2
-        
-        # 绘制阴影（偏移2像素）
-        painter.setPen(QColor(0, 0, 0, 150))  # 半透明黑色
-        painter.drawText(x+2, y+2, text)
-        
+        # 使用 boundingRect 获取更准确的尺寸
+        text_rect = metrics.boundingRect(QRect(0, 0, size.width(), size.height()), Qt.AlignCenter, text) # type: ignore
+        # x = (size.width() - text_rect.width()) // 2
+        # y = (size.height() + metrics.ascent() - metrics.descent()) // 2 # 更精确的垂直居中
+        # 或者直接使用 QRect 来绘制居中文本
+        text_rect_centered = QRect(0, 0, size.width(), size.height()) # type: ignore
+
+
+        # 绘制阴影
+        painter.setPen(QColor(0, 0, 0, 150))
+        # painter.drawText(x + 2, y + 2, text)
+        painter.drawText(text_rect_centered.translated(2, 2), Qt.AlignCenter, text) # 绘制阴影
+
         # 绘制主文字
-        painter.setPen(QColor(255, 255, 255))  # 纯白色
-        painter.drawText(x, y, text)
-
-    def update_frame(self, frame):
-        """
-        更新视频帧显示
-        
-        参数说明：
-        frame -- 视频帧数据 (numpy.ndarray)
-                要求格式：RGB三通道，形状(h,w,3)
-        
-        注意事项：
-        - 仅当connected=True时有效
-        - 自动保持宽高比缩放
-        - 使用高质量平滑缩放
-        """
-        if self._connected and frame is not None:
-            h, w, ch = frame.shape
-            # 创建QImage（不复制数据）
-            q_img = QImage(frame.data, w, h, 
-                          w * ch, QImage.Format_RGB888)
-            
-            # 缩放并显示（保持宽高比）
-            self.setPixmap(
-                QPixmap.fromImage(q_img).scaled(
-                    self.size(),
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation  # 高质量缩放
-                )
-            )
+        painter.setPen(QColor(255, 255, 255))
+        # painter.drawText(x, y, text)
+        painter.drawText(text_rect_centered, Qt.AlignCenter, text) # 绘制文字
 
 
-# 使用示例
-# if __name__ == "__main__":
-#     from PyQt5.QtWidgets import QApplication, QVBoxLayout, QWidget, QPushButton
-#     import sys
-#     import numpy as np
-    
-#     def create_test_frame():
-#         """生成测试视频帧"""
-#         img = np.zeros((480, 640, 3), dtype=np.uint8)
-#         cv2.putText(img, "模拟视频流", (50, 240), 
-#                    cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 3)
-#         return img
-    
-#     app = QApplication(sys.argv)
-    
-#     # 创建测试窗口
-#     window = QWidget()
-#     layout = QVBoxLayout(window)
-    
-#     # 创建显示组件
-#     display = CameraDisplay()
-#     layout.addWidget(display)
-    
-#     # 添加测试按钮
-#     btn_connect = QPushButton("模拟连接")
-#     btn_disconnect = QPushButton("模拟断开")
-#     btn_update = QPushButton("更新帧")
-    
-#     def on_connect():
-#         display.set_connected(True)
-#         display.update_frame(create_test_frame())
-    
-#     btn_connect.clicked.connect(on_connect)
-#     btn_disconnect.clicked.connect(lambda: display.set_connected(False))
-#     btn_update.clicked.connect(lambda: display.update_frame(create_test_frame()))
-    
-#     layout.addWidget(btn_connect)
-#     layout.addWidget(btn_disconnect)
-#     layout.addWidget(btn_update)
-    
-#     window.show()
-#     sys.exit(app.exec_())
+    # --- 移除不再需要的方法 ---
+    # def update_display(self): ...
+    # def show_disconnected_state(self): ...
+
