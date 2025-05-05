@@ -26,7 +26,7 @@ class SpeedCalculationThread(QThread):
     status_update = pyqtSignal(str)                         # 信号：发送状态更新文本
     # marker_detected_signal = pyqtSignal(object, float, str) # 信号：发送已检测到的标记信息 (marker_index, timestamp, marker_type)
 
-    def __init__(self, frame_source_callable: callable, roi_rect: tuple, save_path: str, parent: QObject = None):
+    def __init__(self, frame_source_callable: callable, roi_rect: tuple, save_path: str, time_limit: float, parent: QObject = None):
         """
         初始化速度计算线程。
         :param frame_source_callable: 获取帧的回调函数。
@@ -38,17 +38,18 @@ class SpeedCalculationThread(QThread):
         self.frame_source = frame_source_callable
         self.roi_x, self.roi_y, self.roi_w, self.roi_h = roi_rect
         self.save_path_base = save_path
+        self.time_limit = time_limit
         self._running = False
 
         # --- 线程状态变量 ---
         self.crossing_timestamps = []   # 存储每个标记穿越参考线的时间戳列表
-        self.expected_marker_index = 0  # 期望检测到的下一个标记的索引 (0=黑, 1=白1, ..., 9=白9)
-        self.reference_line_x = self.roi_w // 2 # ROI内部的中心垂直参考线 x坐标 (相对于ROI左边界)
+        self.expected_marker_index = 0  # 期望检测到的下一个标记的索引 (0=黑, 1=白1, ..., 11=白11)
+        self.reference_line_y = self.roi_h // 2 # ROI内部的中心水平参考线 y坐标 (相对于ROI上边界)
         self.crossing_tolerance = 5     # 标记中心点靠近参考线的容差范围 (像素)   ！！！
 
         # --- 图像处理参数 ---
-        self.threshold_value = 100  # 二值化阈值
-        self.min_contour_area = 50  # 最小轮廓面积 (像素) ！！！
+        self.threshold_value = 200  # 二值化阈值
+        self.min_contour_area = 1000  # 最小轮廓面积 (像素) ！！！
 
         # --- 调试设置 ---
         self.debug_save_path = os.path.join(self.save_path_base, "speed_debug_refline")
@@ -106,7 +107,8 @@ class SpeedCalculationThread(QThread):
 
             # 3. 图像处理 (灰度化，二值化)
             gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-            _, thresh_roi = cv2.threshold(gray_roi, self.threshold_value, 255, cv2.THRESH_BINARY_INV)
+            # 大于阈值的像素设置为白色，小于等于阈值的像素设置为黑色
+            _, thresh_roi = cv2.threshold(gray_roi, self.threshold_value, 255, cv2.THRESH_BINARY)
 
             # 4. 查找轮廓
             contours, _ = cv2.findContours(thresh_roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -119,12 +121,12 @@ class SpeedCalculationThread(QThread):
                 # 计算轮廓中心点 (质心) 在ROI内的坐标
                 M = cv2.moments(contour)
                 if M["m00"] == 0: continue
-                cx = int(M["m10"] / M["m00"])
-                # cy = int(M["m01"] / M["m00"]) # Y坐标可能用于未来更复杂的逻辑
+                #cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"]) 
 
                 # --- 检查是否穿越或接近参考线 ---
                 # 如果轮廓中心点非常接近我们定义的中心参考线
-                if abs(cx - self.reference_line_x) <= self.crossing_tolerance:
+                if abs(cy - self.reference_line_y) <= self.crossing_tolerance:
                     # 假设这个穿越的轮廓就是我们正在等待的那个标记
                     crossing_time = time.time()
 
@@ -136,22 +138,23 @@ class SpeedCalculationThread(QThread):
 
                     self.status_update.emit(f"速度标定：检测到 '{marker_type}' 穿越中心线")
 
-                    # 保存调试图像 (显示参考线和检测到的轮廓)
-                    self.save_debug_image(frame, roi, thresh_roi, contour, marker_type, crossing_time)
-
                     # --- 计算速度 ---
                     # 当我们有至少两个时间戳时，就可以计算速度
                     if len(self.crossing_timestamps) >= 2:
                         time_diff = self.crossing_timestamps[-1] - self.crossing_timestamps[-2]
-                        if time_diff > 0.1: # 避免除零或无效时间差
+                        if time_diff > self.time_limit: # 避免除零或无效时间差
                             current_speed = MARKER_DISTANCE_M / time_diff
                             # 发送最新计算的速度值
                             self.calculation_complete.emit(current_speed)
                             # 更新状态，显示最新速度（可选，可能太频繁）
                             # self.status_update.emit(f"实时速度: {current_speed:.3f} m/s")
+                            # 保存调试图像 (显示参考线和检测到的轮廓)
+                            self.save_debug_image(frame, thresh_roi, contour, marker_type, crossing_time)
                         else:
                             print(f"[SpeedThreadRef] 警告: 标记 '{marker_type}' 与前一个标记时间差过小 ({time_diff:.4f}s)")
-
+                            # 删除最后一个时间戳，因为它可能是无效的
+                            self.crossing_timestamps.pop()
+                            self.expected_marker_index -= 1 # 回退期待的标记索引
 
                     # 准备期待下一个标记
                     self.expected_marker_index += 1
@@ -198,7 +201,7 @@ class SpeedCalculationThread(QThread):
         self._running = False # 确保最终状态为停止
 
 
-    def save_debug_image(self, original_frame, roi, processed_roi, contour, marker_type, timestamp):
+    def save_debug_image(self, original_frame, processed_roi, contour, marker_type, timestamp):
         """保存用于调试分析的图像，并绘制参考线。"""
         if not self.debug_save_path: return # 如果路径无效则不保存
 
@@ -210,28 +213,35 @@ class SpeedCalculationThread(QThread):
                           (self.roi_x + self.roi_w, self.roi_y + self.roi_h),
                           (0, 0, 255), 2) # 红色
             # 参考线 (在ROI内部，相对于原始帧坐标)
-            ref_line_abs_x = self.roi_x + self.reference_line_x
-            cv2.line(frame_copy, (ref_line_abs_x, self.roi_y),
-                     (ref_line_abs_x, self.roi_y + self.roi_h),
+            ref_line_abs_y = self.roi_y + self.reference_line_y
+            cv2.line(frame_copy, (self.roi_x, ref_line_abs_y),
+                     (self.roi_x + self.roi_w, ref_line_abs_y),
                      (255, 0, 0), 1) # 蓝色细线
 
             # 2. 在处理后的ROI副本上绘制参考线和检测到的轮廓
             processed_roi_color = cv2.cvtColor(processed_roi, cv2.COLOR_GRAY2BGR)
             # 参考线 (相对于ROI)
-            cv2.line(processed_roi_color, (self.reference_line_x, 0),
-                     (self.reference_line_x, self.roi_h),
+            cv2.line(processed_roi_color, (0, self.reference_line_y),
+                     (self.roi_w, self.reference_line_y),
                      (255, 0, 0), 1) # 蓝色细线
             # 检测到的轮廓
             cv2.drawContours(processed_roi_color, [contour], -1, (0, 255, 0), 2) # 绿色
+            # 轮廓中心点
+            M = cv2.moments(contour)
+            if M["m00"] != 0:
+                 center_point = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
+                 cv2.circle(processed_roi_color, center_point, 3, (0, 255, 0), -1)
 
             # 3. 生成文件名
             ts_str = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S_%f")[:-3]
-            filename_orig = os.path.join(self.debug_save_path, f"{ts_str}_{marker_type}_原始帧含ROI和参考线.jpg")
-            filename_proc = os.path.join(self.debug_save_path, f"{ts_str}_{marker_type}_处理后ROI含轮廓和参考线.jpg")
+            filename_orig = os.path.join(self.debug_save_path, f"{ts_str}_{marker_type}_1.jpg")
+            filename_proc = os.path.join(self.debug_save_path, f"{ts_str}_{marker_type}_2.jpg")
 
             # 4. 保存图像
-            cv2.imwrite(filename_orig, frame_copy)
-            cv2.imwrite(filename_proc, processed_roi_color)
+            rgb_frame_copy = cv2.cvtColor(frame_copy, cv2.COLOR_BGR2RGB)
+            rgb_processed_roi_color = cv2.cvtColor(processed_roi_color, cv2.COLOR_BGR2RGB)
+            cv2.imwrite(filename_orig, rgb_frame_copy)
+            cv2.imwrite(filename_proc, rgb_processed_roi_color)
 
         except Exception as e:
              print(f"[SpeedThreadRef] 保存调试图像时发生错误: {e}")

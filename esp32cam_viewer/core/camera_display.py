@@ -102,7 +102,7 @@ class CameraDisplay(QLabel):
     # --- 需要重写 paintEvent ---
     def paintEvent(self, event):
         """
-        重写绘制事件，用于绘制背景、视频帧、ROI边界和参考线。
+        重写绘制事件，用于绘制背景、视频帧、水平ROI边界和水平参考线。
         """
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing) # 抗锯齿
@@ -112,18 +112,15 @@ class CameraDisplay(QLabel):
 
         if not self._connected:
             # --- 绘制未连接状态 ---
-            # 检查或创建马赛克缓存
             if self._mosaic_cache is None or self._mosaic_cache.size() != self.size():
-                 if self.size().width() > 0 and self.size().height() > 0: # 确保尺寸有效
+                 if self.size().width() > 0 and self.size().height() > 0:
                      self._mosaic_cache = self.create_mosaic_background()
                  else:
-                     self._mosaic_cache = None # 尺寸无效则不创建
+                     self._mosaic_cache = None
 
-            # 绘制马赛克背景（如果可用）
             if self._mosaic_cache:
                  painter.drawImage(0, 0, self._mosaic_cache)
 
-            # 绘制提示文字
             self.draw_connection_text(painter, self.size())
 
         else:
@@ -134,7 +131,7 @@ class CameraDisplay(QLabel):
                 py = (self.height() - self.current_pixmap.height()) // 2
                 painter.drawPixmap(px, py, self.current_pixmap)
 
-                # --- 如果设置了ROI，则绘制ROI和参考线 ---
+                # --- 如果设置了ROI，则绘制水平ROI边界和水平参考线 ---
                 if self.roi_rect and self.current_frame is not None:
                     frame_h, frame_w = self.current_frame.shape[:2]
                     if frame_w > 0 and frame_h > 0:
@@ -148,35 +145,35 @@ class CameraDisplay(QLabel):
                         scaled_roi_w = int(self.roi_rect[2] * scale_w)
                         scaled_roi_h = int(self.roi_rect[3] * scale_h)
 
-                        # --- 绘制ROI的两条垂直边界线 (红色虚线) ---
+                        # --- 修改：绘制ROI的两条水平边界线 (红色虚线) ---
                         pen_roi = QPen(QColor(255, 0, 0)) # 红色
                         pen_roi.setStyle(Qt.DashLine)     # 虚线
                         pen_roi.setWidth(2)               # 线宽
                         painter.setPen(pen_roi)
-                        painter.drawLine(scaled_roi_x, scaled_roi_y, scaled_roi_x, scaled_roi_y + scaled_roi_h)
-                        painter.drawLine(scaled_roi_x + scaled_roi_w, scaled_roi_y, scaled_roi_x + scaled_roi_w, scaled_roi_y + scaled_roi_h)
+                        # Top boundary
+                        painter.drawLine(scaled_roi_x, scaled_roi_y, scaled_roi_x + scaled_roi_w, scaled_roi_y)
+                        # Bottom boundary
+                        painter.drawLine(scaled_roi_x, scaled_roi_y + scaled_roi_h, scaled_roi_x + scaled_roi_w, scaled_roi_y + scaled_roi_h)
 
-                        # --- 绘制中心参考线 (蓝色实线) ---
-                        # 参考线在ROI内部的中心，其 x 坐标相对于 ROI 左边界是 roi_w / 2
-                        # 换算成相对于原始帧的 x 坐标是 roi_x + roi_w / 2
-                        ref_line_orig_x = self.roi_rect[0] + self.roi_rect[2] // 2
-                        # 将原始帧中的 x 坐标映射到显示的 pixmap 坐标
-                        scaled_ref_line_x = int(px + ref_line_orig_x * scale_w)
+                        # --- 修改：绘制中心水平参考线 (蓝色实线) ---
+                        # 参考线在ROI内部的垂直中心，其 y 坐标相对于 ROI 顶部是 roi_h / 2
+                        # 换算成相对于原始帧的 y 坐标是 roi_y + roi_h / 2
+                        ref_line_orig_y = self.roi_rect[1] + self.roi_rect[3] // 2
+                        # 将原始帧中的 y 坐标映射到显示的 pixmap 坐标
+                        scaled_ref_line_y = int(py + ref_line_orig_y * scale_h)
 
                         pen_refline = QPen(QColor(0, 0, 255)) # 蓝色
                         pen_refline.setStyle(Qt.SolidLine)   # 实线
                         pen_refline.setWidth(1)             # 细线
                         painter.setPen(pen_refline)
-                        # 从ROI顶部绘制到底部 (使用 scaled_roi_y 和 scaled_roi_h)
-                        painter.drawLine(scaled_ref_line_x, scaled_roi_y, scaled_ref_line_x, scaled_roi_y + scaled_roi_h)
+                        # 从ROI左边界绘制到右边界 (使用 scaled_roi_x 和 scaled_roi_w)
+                        painter.drawLine(scaled_roi_x, scaled_ref_line_y, scaled_roi_x + scaled_roi_w, scaled_ref_line_y)
             else:
                 # 如果已连接但还没有帧数据，可以显示 "加载中..."
                 font = QFont("Microsoft YaHei", 18)
                 painter.setFont(font)
                 painter.setPen(QColor(200, 200, 200)) # 浅灰色
                 painter.drawText(self.rect(), Qt.AlignCenter, "视频加载中...")
-
-        # 不需要手动调用 painter.end()，因为 QPainter 在析构时会自动处理
 
     # --- 以下方法保持不变 ---
     def create_mosaic_background(self):

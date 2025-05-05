@@ -42,6 +42,7 @@ class CameraApp(QMainWindow):
         self.speed_thread = None                # 速度标定线程
         self.calculated_roi_rect = None         # 存储计算出的ROI
         self.current_speed = 0.0                # 存储配准的速度
+        self.speed_time_limit = 0.6             # 速度标定时间容差（秒）
         
         # 创建data目录（如果不存在）
         self.data_dir = os.path.join(os.getcwd(), "data")
@@ -519,7 +520,7 @@ class CameraApp(QMainWindow):
 
     def generate_unique_filename(self):
         """生成绝对不会重复的文件名"""
-        base_name = datetime.now().strftime("视频_%Y%m%d_%H_%M_%S_%f")[:-3]  # 精确到毫秒
+        base_name = datetime.now().strftime("vid_%Y%m%d_%H_%M_%S_%f")[:-3]  # 精确到毫秒
         ext = ".mp4"
         filename = f"{base_name}{ext}"
         full_path = os.path.join(self.data_dir, 'vids',filename)
@@ -612,12 +613,13 @@ class CameraApp(QMainWindow):
             return
         if self.speed_thread and self.speed_thread.isRunning():
             # 可选：允许用户停止当前的标定
-            reply = QMessageBox.question(self, '确认', '速度标定已在进行中，要停止并重新开始吗？',
+            reply = QMessageBox.question(self, '确认', '速度标定已在进行中，要停止吗？',
                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply == QMessageBox.Yes:
                 self.speed_thread.stop() # 停止旧的，等待 finished 信号清理
                 self.btn_register_speed.setText("速度标定")
                 self.btn_register_speed.setStyleSheet("background-color: #81C784; color: black;")
+                self.logger.log("等待旧标定线程结束...", "DEBUG")
                 # 可能需要稍等片刻或在 finished 信号后再启动新的，这里简化处理，直接继续
             else:
                 return # 用户选择不重新开始
@@ -633,11 +635,11 @@ class CameraApp(QMainWindow):
             QMessageBox.warning(self, "警告", "获取到的视频帧尺寸无效。")
             return
 
-        # 3. 计算ROI (例如：水平居中，宽度为画面1/3，高度为画面100%)
-        roi_w = frame_w // 5
-        roi_h = int(frame_h * 1.0)
-        roi_x = (frame_w - roi_w) // 2
+        # 3. 计算ROI 
+        roi_h = frame_h // 5
         roi_y = (frame_h - roi_h) // 2
+        roi_x = frame_w // 8
+        roi_w = frame_w - roi_x * 2
         self.calculated_roi_rect = (roi_x, roi_y, roi_w, roi_h)
 
         # 4. 通知 CameraDisplay 绘制 ROI 和参考线
@@ -648,7 +650,8 @@ class CameraApp(QMainWindow):
             self.speed_thread = SpeedCalculationThread(
                 frame_source_callable=self.get_latest_frame_for_speed_thread,
                 roi_rect=self.calculated_roi_rect,
-                save_path=self.speed_debug_dir # 传递调试图像保存路径
+                save_path=self.speed_debug_dir, # 传递调试图像保存路径
+                time_limit=self.speed_time_limit, # 传递时间限制
             )
 
             # --- 连接信号 ---
@@ -714,7 +717,7 @@ class CameraApp(QMainWindow):
         self.btn_register_speed.setText("速度标定") # 恢复按钮文本
         self.btn_register_speed.setStyleSheet("background-color: #81C784; color: black;")
         self.status_label.setText("已停止速度标定") 
-        
+
     # --- 需要添加更新速度标签的方法 ---
     def update_speed_label(self):
         """更新显示速度的标签文本"""
