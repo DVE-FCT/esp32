@@ -6,6 +6,29 @@ import sys
 import machine
 import _thread
 
+
+
+
+from machine import UART
+# 设置串口 1 的波特率为 115200，TX 引脚接 GPIO4，RX 引脚接 GPIO5
+"""
+    ESP32-CAM 串口连接示意图：
+    |-----------------|
+    |                 |
+    | ESP32-CAM       |
+    |                 |
+    |  TX  ----> GPIO4|
+    |  RX  <---- GPIO5|
+    |                 |
+    |-----------------|
+
+    默认无奇偶校验位，数据位8，停止位1，波特率115200
+"""
+uart = UART(1, baudrate=115200, tx=4, rx=5)  # 按硬件实际定义
+
+
+
+
 # WiFi配置
 WIFI_SSID = "fff"
 WIFI_PASS = "123456qaz789"
@@ -133,16 +156,29 @@ def handle_control_client(conn, addr):
                     if cmd == 'L':
                         led.on()
                         conn.send(b"1")
-                    elif cmd == 'P':
-                        photo_result = take_photo()
-                        conn.send(b"1")
-                    elif cmd == 'l':  
+                    elif cmd == 'l':
                         led.off()
                         conn.send(b"1")
+                    elif cmd == 'P':
+                        photo_result = take_photo()  # 这里可以打印结果或不打印
+                        conn.send(b"1")
+
+
+
+
+                    elif cmd in ('1','2','3','4','5'):
+                        # 转发数字字符给STM32
+                        uart.write(cmd.encode('ascii'))
+                        print(f"转发给STM32: {cmd}")
+                        conn.send(b"1")
+
+
+
+
                     else:
                         led.off()
                         conn.send(b"0")
-                        print ("数据格式有误")
+                        print("无效命令")
                         
                 elif data == b'':  # 客户端断开连接
                     print("客户端正常断开")
