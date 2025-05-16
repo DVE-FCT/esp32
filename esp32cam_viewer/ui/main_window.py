@@ -5,13 +5,14 @@ from PyQt5.QtCore import Qt, pyqtSignal, QTimer, pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap
 
 import numpy as np
-import cv2, os, random, sys
+import cv2, os, random, sys, json
 from datetime import datetime
 
 # 导入自定义模块
 from core.video_thread import VideoStreamThread
 from core.control_thread import ControlThread
 from core.speed_thread import SpeedCalculationThread
+from core.detection_thread import DetectionThread
 
 from core.camera_manager import CameraManager
 from core.camera_display import CameraDisplay 
@@ -43,6 +44,10 @@ class CameraApp(QMainWindow):
         self.calculated_roi_rect = None         # 存储计算出的ROI
         self.current_speed = 0.0                # 存储配准的速度
         self.speed_time_limit = 0.6             # 速度标定时间容差（秒）
+
+        self.detection_thread = None            # 检测线程实例
+        self.models = {}  # 存储模型名称和路径的字典
+
         
         # 创建data目录（如果不存在）
         self.data_dir = os.path.join(os.getcwd(), "data")
@@ -50,6 +55,9 @@ class CameraApp(QMainWindow):
         # --- 为速度标定创建调试目录 ---
         self.speed_debug_dir = os.path.join(self.data_dir, 'speed_debug_output')
         os.makedirs(self.speed_debug_dir, exist_ok=True)
+        # 创建存储检测结果的目录
+        self.detection_result_dir = os.path.join(self.data_dir, 'detection_debug_output')
+        os.makedirs(self.detection_result_dir, exist_ok=True)
 
         # 初始化UI界面
         self.setup_ui()
@@ -63,6 +71,9 @@ class CameraApp(QMainWindow):
         
         # 初始化摄像头下拉框
         self.update_camera_selector()
+
+        # 初始化模型选择框
+        self.update_model_selector()
 
         # 初始化自动重连定时器
         self.init_reconnect_timer()
@@ -88,10 +99,6 @@ class CameraApp(QMainWindow):
         # 初始化视频显示区域（右）
         self.setup_video_display()
 
-        # 设置左右两部分的比例为2:3 ，因为左边固定宽度，右边自适应，所以调整比例没有影响窗口拓展时的布局
-        # self.main_layout.setStretch(0, 4)  # 左侧控制面板占比2
-        # self.main_layout.setStretch(1, 6)  # 右侧视频显示占比3
-
     def setup_control_panel(self):
         """初始化左侧控制面板"""
         # 控制面板容器
@@ -99,12 +106,17 @@ class CameraApp(QMainWindow):
         control_panel.setFixedWidth(400)                        # 固定宽度      
         control_layout = QVBoxLayout(control_panel)             
         control_layout.setSpacing(15)                           # 设置组件间距    
-        
+
         # --- 摄像头选择区域 ---
         camera_group = QWidget()
         camera_layout = QVBoxLayout(camera_group)
         camera_layout.setSpacing(8)
         
+        # 模型选择框
+        self.model_selector = QComboBox()
+        camera_layout.addWidget(QLabel("选择检测模型:"))
+        camera_layout.addWidget(self.model_selector)
+
         # 摄像头下拉选择框
         self.cam_selector = QComboBox()
         camera_layout.addWidget(QLabel("选择摄像头:"))
@@ -192,7 +204,7 @@ class CameraApp(QMainWindow):
         self.main_layout.addWidget(control_panel)
 
     def setup_video_display(self):
-        """初始化视频显示区域 (修改版)"""
+        """初始化视频显示区域 """
         # 视频显示容器
         video_container = QWidget()
         # 主垂直布局，用于容纳速度控制区、视频显示区和状态标签
@@ -200,7 +212,7 @@ class CameraApp(QMainWindow):
         video_layout.setContentsMargins(0, 0, 0, 0)
         video_layout.setSpacing(5)  # 为各部分之间添加一点间距
 
-        # --- 新增：速度控制水平布局 ---
+        # 速度标定控制区
         speed_control_widget = QWidget() # 创建一个容器Widget
         speed_control_layout = QHBoxLayout(speed_control_widget) # 创建水平布局
         speed_control_layout.setContentsMargins(5, 2, 5, 2) # 设置内边距 (左,上,右,下)
@@ -209,8 +221,6 @@ class CameraApp(QMainWindow):
         # 速度配准按钮
         self.btn_register_speed = QPushButton("速度标定")
         self.btn_register_speed.setEnabled(False) # 初始禁用，连接后启用
-        # 可以设置固定宽度或策略
-        # self.btn_register_speed.setFixedWidth(100)
 
         # 显示当前速度的标签
         self.label_current_speed = QLabel(f"当前速度: {self.current_speed:.2f} m/s")
@@ -221,6 +231,16 @@ class CameraApp(QMainWindow):
         speed_control_layout.addWidget(self.btn_register_speed)
         speed_control_layout.addWidget(self.label_current_speed)
         speed_control_layout.addStretch(1) # 添加伸缩因子，将按钮和标签推到左侧
+
+        # 检测按键
+        self.btn_detection = QPushButton("开始检测")
+        self.btn_detection.setEnabled(False) # 初始禁用，连接后启用
+        # 匹配的圆形标签
+        self.detection_label = QLabel()
+        self.detection_label.setFixedSize(20, 20)
+        self.detection_label.setStyleSheet("background-color: #81C784; border-radius: 10px;")
+        speed_control_layout.addWidget(self.detection_label)
+        speed_control_layout.addWidget(self.btn_detection)
 
         # --- 将新的速度控制布局添加到主垂直布局的顶部 ---
         video_layout.addWidget(speed_control_widget)
@@ -238,12 +258,10 @@ class CameraApp(QMainWindow):
         # --- 原有的状态信息标签 ---
         self.status_label = QLabel("准备连接摄像头...")
         self.status_label.setAlignment(Qt.AlignCenter)
-        # self.status_label.setStyleSheet("font-size: 16px; color: #666;")
         # 将状态标签添加到最下方
         video_layout.addWidget(self.status_label)
 
         # --- 将整个视频区域容器添加到主布局 ---
-        # (stretch=1 让这个区域占据右侧所有可用空间)
         self.main_layout.addWidget(video_container, stretch=1)
 
     def setup_connections(self):
@@ -259,9 +277,13 @@ class CameraApp(QMainWindow):
         self.btn_capture.clicked.connect(self.capture_image)      # 拍照按钮
 
         self.btn_register_speed.clicked.connect(self.start_speed_calibration) # 速度标定按钮
+        self.btn_detection.clicked.connect(self.start_detection) # 检测按钮
 
         # 摄像头选择变化信号
         self.cam_selector.currentTextChanged.connect(self.switch_camera)
+
+        # 模型选择变化信号
+        self.model_selector.currentTextChanged.connect(self.switch_model)
         
         # 窗口关闭事件处理
         self.closeEvent = self.on_close
@@ -340,6 +362,8 @@ class CameraApp(QMainWindow):
             self.btn_record.setEnabled(True)
             # --- 启用速度标定按钮 ---
             self.btn_register_speed.setEnabled(True)
+            # --- 启用检测按钮 ---
+            self.btn_detection.setEnabled(True)
             self.status_label.setText(f"连接中: {connection_text}")
             
             # 保存当前摄像头信息
@@ -404,6 +428,7 @@ class CameraApp(QMainWindow):
         self.btn_connect.setText("连接摄像头")
         self.btn_connect.setStyleSheet("background-color: #4CAF50; color: black;")
         self.btn_record.setEnabled(False)
+        self.btn_detection.setEnabled(False)
         # --- 禁用速度标定按钮 ---
         self.btn_register_speed.setEnabled(False)
         self.status_label.setText("已断开连接")
@@ -451,10 +476,9 @@ class CameraApp(QMainWindow):
 
     def LED_4_control(self):
         """灯光控制（分开实现）"""
-        # if not self.control_thread or not self.control_thread.is_connected:
-        #     self.logger.log("未连接到可控制的摄像头", "ERROR")
-        #     return
-        
+        if not self.control_thread or not self.control_thread.is_connected:
+            self.logger.log("未连接到可控制的摄像头", "ERROR")
+            return
         if self.light_state == False:
             success = self.control_thread.turn_light_on()
             self.light_state = True
@@ -471,6 +495,9 @@ class CameraApp(QMainWindow):
 
     def capture_image(self):
         """拍照控制"""
+        if not self.control_thread or not self.control_thread.is_connected:
+            self.logger.log("未连接到可控制的摄像头", "ERROR")
+            return
         success = self.control_thread.capture_photo()
         if success:
             self.status_label.setText("拍照指令已发送")
@@ -617,10 +644,10 @@ class CameraApp(QMainWindow):
                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply == QMessageBox.Yes:
                 self.speed_thread.stop() # 停止旧的，等待 finished 信号清理
+                self.cleanup_speed_calibration()
                 self.btn_register_speed.setText("速度标定")
                 self.btn_register_speed.setStyleSheet("background-color: #81C784; color: black;")
                 self.logger.log("等待旧标定线程结束...", "DEBUG")
-                # 可能需要稍等片刻或在 finished 信号后再启动新的，这里简化处理，直接继续
             else:
                 return # 用户选择不重新开始
 
@@ -658,7 +685,6 @@ class CameraApp(QMainWindow):
             self.speed_thread.calculation_complete.connect(self.on_speed_calculation_complete)
             self.speed_thread.calculation_error.connect(self.on_speed_calculation_error)
             self.speed_thread.status_update.connect(self.on_speed_status_update)
-            self.speed_thread.finished.connect(self.on_speed_thread_finished) # 连接 finished 信号
 
             # --- 启动线程 ---
             self.speed_thread.start()
@@ -681,6 +707,7 @@ class CameraApp(QMainWindow):
         self.update_speed_label()
         # 日志记录可以减少频率或使用 DEBUG 级别
         if self.logger: self.logger.log(f"速度更新: {speed:.3f} m/s", "DEBUG")
+        self.cleanup_speed_calibration() 
 
     # --- 新增：处理速度计算错误信号 ---
     @pyqtSlot(str)
@@ -688,10 +715,9 @@ class CameraApp(QMainWindow):
         """处理来自速度线程的错误"""
         if self.logger: self.logger.log(f"速度标定错误: {error_message}", "ERROR")
         self.status_label.setText(f"标定错误: {error_message}")
-        # 错误发生时，线程通常会停止，finished 信号会被触发，清理工作在 on_speed_thread_finished 中进行
-        # 这里可以额外弹出消息框
         QMessageBox.critical(self, "速度标定错误", error_message)
-        # 清理工作交给 on_speed_thread_finished
+        self.cleanup_speed_calibration() # 出错时清理
+
 
     # --- 新增：处理速度线程状态更新信号 ---
     @pyqtSlot(str)
@@ -699,13 +725,6 @@ class CameraApp(QMainWindow):
         """更新主状态标签以显示速度线程的状态"""
         self.status_label.setText(status_message)
         self.logger.log(f"速度标定状态更新: {status_message}", "DEBUG")
-
-    # --- 新增：处理速度线程结束信号 ---
-    @pyqtSlot()
-    def on_speed_thread_finished(self):
-        """当速度标定线程结束后进行清理"""
-        self.logger.log("速度标定线程已结束。", "INFO")
-        self.cleanup_speed_calibration()
 
     # --- 新增：速度标定清理辅助函数 ---
     def cleanup_speed_calibration(self):
@@ -730,6 +749,135 @@ class CameraApp(QMainWindow):
             return self.video_display.get_current_frame()
         return None
 
+
+    # 初始化模型选择下拉框
+    def update_model_selector(self):
+        """初始化模型选择下拉框"""
+        # 清空下拉框
+        self.model_selector.clear()
+        self.model_selector.addItem("待选择...")  # 默认选项
+
+        # 加载 models.json 文件
+        try:
+            with open("./models.json", "r") as f:
+                self.models = json.load(f)
+        except FileNotFoundError:
+            print("models.json 文件未找到")
+            return
+        except json.JSONDecodeError:
+            print("models.json 文件格式错误")
+            return
+
+        # 将模型名称添加到下拉框中
+        for model_name in self.models.keys():
+            self.model_selector.addItem(model_name)
+
+    # 处理下拉框选择模型路径的函数
+    def switch_model(self, model_name):
+        """切换选中的模型:param model_name: 模型名称"""
+        self.logger.log(f"已选择模型: {model_name}")
+
+
+    # 处理检测按键的线程函数
+    def start_detection(self):
+        """处理“检测”按钮点击事件"""
+        # 1. 检查状态
+        if not self.video_thread or not self.video_thread.isRunning():
+            QMessageBox.warning(self, "警告", "请先连接摄像头。")
+            return    
+        if self.detection_thread and self.detection_thread.isRunning():
+            # 可选：允许用户停止当前的检测
+            reply = QMessageBox.question(self, '确认', '检测已在进行中，要停止吗？',
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                self.detection_thread.stop() # 停止旧的，等待 finished 信号清理
+                self.cleanup_detection()
+                self.logger.log("等待旧检测线程结束...", "DEBUG")
+            else:
+                return # 用户选择不重新开始
+            
+        # 2. 获取当前帧以确定ROI
+        current_frame = self.get_latest_frame_for_speed_thread()
+        if current_frame is None:
+            QMessageBox.warning(self, "警告", "无法获取当前视频帧，请稍候再试。")
+            return
+
+        frame_h, frame_w = current_frame.shape[:2]
+        if frame_w <= 0 or frame_h <= 0:
+            QMessageBox.warning(self, "警告", "获取到的视频帧尺寸无效。")
+            return
+
+        # 3. 计算ROI 
+        roi_h = frame_h // 8
+        roi_y = frame_h - roi_h
+        roi_x = frame_w // 8
+        roi_w = frame_w - roi_x * 2
+        self.calculated_roi_rect = (roi_x, roi_y+10, roi_w, roi_h-10)
+
+        # 4. 通知 CameraDisplay 绘制 ROI 和参考线
+        self.video_display.set_roi(self.calculated_roi_rect)
+
+        # 5. 准备并启动 DetectionThread
+        try:
+            self.detection_thread = DetectionThread(frame_source_callable=self.get_latest_frame_for_speed_thread, roi=self.calculated_roi_rect,
+                                                     model_path=self.models[self.model_selector.currentText()], save_path=self.detection_result_dir)
+
+            # --- 连接信号 ---
+            self.detection_thread.detection_result.connect(self.on_detection_complete)
+            self.detection_thread.error_occurred.connect(self.on_detection_error)
+            self.detection_thread.status_updated.connect(self.on_detection_status_update)
+
+            # --- 启动线程 ---
+            self.detection_thread.start()
+            self.logger.log("检测线程已启动...", "INFO")
+            self.status_label.setText("检测进行中...")
+            self.btn_detection.setText("停止检测") # 可选：改变按钮文本
+            self.btn_detection.setStyleSheet("background-color: #FF5722; color: black;")
+            self.detection_label.setStyleSheet("background-color: #FF5722; border-radius: 10px;")
+
+        except Exception as e:
+            error_msg = f"启动检测失败: {e}"
+            self.logger.log(error_msg, "ERROR")
+            self.cleanup_detection()
+
+    # --- 新增：处理检测完成信号 ---
+    @pyqtSlot(int, bool)
+    def on_detection_complete(self, result, is_speed_limit):
+        """处理来自检测线程的检测结果"""
+        self.logger.log(f"检测结果: {result, is_speed_limit}", "DEBUG")
+
+
+    # --- 新增：处理检测错误信号 ---
+    @pyqtSlot(str)
+    def on_detection_error(self, error_message):
+        """处理来自检测线程的错误"""
+        if self.logger: self.logger.log(f"检测错误: {error_message}", "ERROR")
+        self.status_label.setText(f"检测错误: {error_message}")
+        self.cleanup_detection()
+
+    # --- 新增：处理检测线程状态更新信号 ---
+    @pyqtSlot(str)
+    def on_detection_status_update(self, status_message):
+        """更新主状态标签以显示检测线程的状态"""
+        self.status_label.setText(status_message)
+        self.logger.log(f"检测状态更新: {status_message}", "DEBUG")
+        if status_message == "检测线程停止":
+            self.cleanup_detection()
+
+
+    # --- 新增：检测线程清理辅助函数 ---
+    def cleanup_detection(self):
+        """清理检测相关的状态和UI"""
+        self.detection_thread = None # 清除线程引用
+        if self.video_display:
+            self.video_display.set_roi(None) # 停止绘制ROI
+        self.calculated_roi_rect = None # 清除ROI记录
+        self.btn_detection.setText("开始检测") # 恢复按钮文本
+        self.btn_detection.setStyleSheet("background-color: #81C784; color: black;")
+        self.status_label.setText("已停止检测") 
+        self.detection_label.setStyleSheet("background-color: #81C784; border-radius: 10px;")
+
+
     def on_close(self, event):
         """窗口关闭事件处理"""
         if self.speed_thread and self.speed_thread.isRunning():
@@ -740,30 +888,3 @@ class CameraApp(QMainWindow):
             self.disconnect_camera()
             self.logger.log("关闭窗口：正在断开摄像头连接...")
         event.accept()
-
-# # 主程序入口
-# if __name__ == "__main__":
-#     import sys
-#     from PyQt5.QtWidgets import QApplication
-    
-#     app = QApplication(sys.argv)
-    
-#     # 设置全局样式
-#     app.setStyleSheet("""
-#         QMainWindow {
-#             background-color: #F5F5F5;
-#         }
-#         QPushButton {
-#             padding: 5px;
-#             border-radius: 4px;
-#             min-width: 80px;
-#         }
-#         QTextEdit {
-#             font-family: Consolas;
-#             font-size: 12px;
-#         }
-#     """)
-    
-#     window = CameraApp()
-#     window.show()
-#     sys.exit(app.exec_())

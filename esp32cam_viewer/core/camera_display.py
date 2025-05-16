@@ -85,12 +85,12 @@ class CameraDisplay(QLabel):
         # 如果未连接或帧为空，则不处理，paintEvent 会绘制相应状态
 
     # +++ 新增方法 +++
-    def get_current_frame(self) -> np.ndarray | None:
+    def get_current_frame(self):
         """返回当前存储的原始 OpenCV 视频帧 (BGR格式)。"""
         return self.current_frame
 
     # +++ 新增方法 +++
-    def set_roi(self, roi_rect: tuple | None):
+    def set_roi(self, roi_rect: tuple):
         """
         设置要在视频帧上绘制的ROI矩形区域。
         :param roi_rect: 元组 (x, y, w, h) 或 None (不绘制)。坐标是相对于原始帧尺寸的。

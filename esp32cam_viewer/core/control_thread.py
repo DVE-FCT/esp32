@@ -19,14 +19,27 @@ class ControlThread(QThread):
         self._light_on = False
 
     def run(self):
-        """线程主循环, 定期检查并处理指令队列"""
-        pass  # 没有队列管理，直接按需发送指令
+        """线程主循环，管理连接状态并处理指令"""
+        while not self.isInterruptionRequested():  # 检查线程是否被请求中断
+            if not self._connected:
+                # 如果未连接，尝试建立连接
+                if not self._establish_connection():
+                    # 连接失败，等待一段时间后重试
+                    self.msleep(5000)  # 等待 5 秒
+                    continue
+
+            # 保持连接状态，等待指令
+            self.msleep(100)  # 短暂休眠，避免占用过多 CPU
+
+        # 线程被请求中断，清理资源
+        self._cleanup_socket()
+        print("线程已安全停止")
 
     def _establish_connection(self):
         """建立TCP连接"""
         try:
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._socket.settimeout(5)
+            self._socket.settimeout(10)
             self._socket.connect((self.ip_address, self.control_port))
             self._connected = True
             print ("\n---------------------------------------------------------------")

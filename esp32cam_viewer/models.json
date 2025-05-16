@@ -1,0 +1,4 @@
+{
+    "yolov8.pt": "models/yolov8.pt",
+    "yolov11.pt": "models/yolov11.pt"
+}

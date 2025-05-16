@@ -12,7 +12,7 @@ class VideoStreamThread(QThread):
     - status_signal: 发送状态信息(状态类型, 消息内容)
     """
     frame_ready = pyqtSignal(np.ndarray)
-    status_signal = pyqtSignal(str, str)  # (status_type, message)
+    status_signal = pyqtSignal(str, str)  
 
     def __init__(self, ip=None, port=None, device=0):
         """
@@ -41,7 +41,6 @@ class VideoStreamThread(QThread):
         self.writer = None                  # 视频写入器对象
         self.recording_start_time = 0       # 录制开始时间戳(毫秒)
         self.indicator_radius = 8          # 红点半径
-        self.radius_increasing = True       # 红点半径变化方向
 
         # 测试用属性（验证代码执行路径）
         self.test_frame_count = 0           # 测试：已处理帧数计数器
@@ -77,7 +76,7 @@ class VideoStreamThread(QThread):
             # 处理帧(添加时间戳、FPS显示和录制状态)
             processed_frame = self._process_frame(frame)
 
-            # 发送处理后的帧（BGR转RGB）
+            # 发送处理后的帧（BGR转RGB,QT显示需要RGB的）
             self.frame_ready.emit(cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB))
 
         # 资源释放

@@ -10,15 +10,14 @@ from datetime import datetime
 # --- 常量定义 ---
 MARKER_DISTANCE_M = 0.04  # 标记间的实际距离 (4cm = 0.04米)
 NUM_WHITE_MARKERS = 11     # 白色标记的数量
-TOTAL_MARKERS = 1 + NUM_WHITE_MARKERS # 总标记数 (1黑 + 11白)
+TOTAL_MARKERS = 0 + NUM_WHITE_MARKERS # 总标记数 (0黑 + 11白)
 
 class SpeedCalculationThread(QThread):
     """
     通过分析视频帧中标记穿越中心参考线来计算传送带速度的线程。
-    记录每个标记（1黑 + 9白）穿越ROI中心线的时间戳。
+    记录每个标记（0黑 + 11白）穿越ROI中心线的时间戳。
     使用连续标记的时间差和固定距离计算速度。
     持续更新计算出的速度值。
-    简化了检测逻辑，假设标记按序清晰通过。
     """
     # --- 信号定义 ---
     calculation_complete = pyqtSignal(float)                # 信号：发送最新计算出的速度值 (m/s)
@@ -67,10 +66,10 @@ class SpeedCalculationThread(QThread):
 
         self._running = True
         self.crossing_timestamps = [] # 重置时间戳列表
-        self.expected_marker_index = 0 # 从黑色标记开始期待
-        self.status_update.emit(f"速度标定(参考线法)：等待黑色标记穿越中心线...")
+        self.expected_marker_index = 0 # 从第一条白线开始期待
+        self.status_update.emit(f"速度标定：等待第一条白线穿越中心线...")
         start_time = time.time()
-        timeout_seconds = 45 # 稍微增加超时时间，因为需要检测更多标记，单位是秒
+        timeout_seconds = 30 # 稍微增加超时时间，因为需要检测更多标记，单位是秒
 
         while self._running and self.expected_marker_index < TOTAL_MARKERS:
             current_time = time.time()
@@ -134,8 +133,8 @@ class SpeedCalculationThread(QThread):
                     self.crossing_timestamps.append(crossing_time)
 
                     # 确定标记类型 (用于状态更新和调试)
-                    marker_type = 'black' if self.expected_marker_index == 0 else f'white{self.expected_marker_index}'
-
+                    # marker_type = 'black' if self.expected_marker_index == 0 else f'white{self.expected_marker_index}'
+                    marker_type = f'white{self.expected_marker_index + 1}'
                     self.status_update.emit(f"速度标定：检测到 '{marker_type}' 穿越中心线")
 
                     # --- 计算速度 ---
@@ -143,9 +142,6 @@ class SpeedCalculationThread(QThread):
                     if len(self.crossing_timestamps) >= 2:
                         time_diff = self.crossing_timestamps[-1] - self.crossing_timestamps[-2]
                         if time_diff > self.time_limit: # 避免除零或无效时间差
-                            current_speed = MARKER_DISTANCE_M / time_diff
-                            # 发送最新计算的速度值
-                            self.calculation_complete.emit(current_speed)
                             # 更新状态，显示最新速度（可选，可能太频繁）
                             # self.status_update.emit(f"实时速度: {current_speed:.3f} m/s")
                             # 保存调试图像 (显示参考线和检测到的轮廓)
@@ -161,7 +157,8 @@ class SpeedCalculationThread(QThread):
 
                     # 更新下一个期待的状态
                     if self.expected_marker_index < TOTAL_MARKERS:
-                         next_marker_type = 'black' if self.expected_marker_index == 0 else f'white{self.expected_marker_index}'
+                        #  next_marker_type = 'black' if self.expected_marker_index == 0 else f'white{self.expected_marker_index}'
+                         next_marker_type = f'white{self.expected_marker_index + 1}'
                          self.status_update.emit(f"速度标定：等待 '{next_marker_type}' 穿越中心线...{self.expected_marker_index/TOTAL_MARKERS:.1%}")
                     else:
                          self.status_update.emit(f"速度标定：所有 {TOTAL_MARKERS} 个标记已检测完毕。")
@@ -208,6 +205,7 @@ class SpeedCalculationThread(QThread):
         try:
             # 1. 在原始帧副本上绘制ROI边界 (红色实线)
             frame_copy = original_frame.copy()
+            frame_copy = cv2.cvtColor(frame_copy, cv2.COLOR_RGB2BGR)
             # ROI 边界
             cv2.rectangle(frame_copy, (self.roi_x, self.roi_y),
                           (self.roi_x + self.roi_w, self.roi_y + self.roi_h),
@@ -238,10 +236,8 @@ class SpeedCalculationThread(QThread):
             filename_proc = os.path.join(self.debug_save_path, f"{ts_str}_{marker_type}_2.jpg")
 
             # 4. 保存图像
-            rgb_frame_copy = cv2.cvtColor(frame_copy, cv2.COLOR_BGR2RGB)
-            rgb_processed_roi_color = cv2.cvtColor(processed_roi_color, cv2.COLOR_BGR2RGB)
-            cv2.imwrite(filename_orig, rgb_frame_copy)
-            cv2.imwrite(filename_proc, rgb_processed_roi_color)
+            cv2.imwrite(filename_orig, frame_copy)
+            cv2.imwrite(filename_proc, processed_roi_color)
 
         except Exception as e:
              print(f"[SpeedThreadRef] 保存调试图像时发生错误: {e}")
