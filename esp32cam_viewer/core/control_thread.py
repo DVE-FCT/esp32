@@ -3,7 +3,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 class ControlThread(QThread):
     """
-    ESP32-CAM控制线程(简化版)
+    ESP32-CAM控制线程
     实现通过单个字符指令进行控制：L - 开灯, l - 关灯, P - 拍照
     """
     command_sent = pyqtSignal(str, bool)   # 指令发送完成信号
@@ -95,7 +95,7 @@ class ControlThread(QThread):
 
     def send_command(self, command_char):
         """直接发送单个字符指令"""
-        if command_char not in ('L', 'l', 'P'):
+        if command_char not in ('L', 'l', 'P', '1', '2', '3', '4', '5'):
             self.connection_error.emit("无效指令")
             return False
         
@@ -113,6 +113,16 @@ class ControlThread(QThread):
     def capture_photo(self):
         """拍照"""
         return self.send_command('P')
+    
+    def time_control(self, time_str):
+        """
+        发送定时控制指令，time_str应为字符串类型，且是单字符数字如'1','2'等
+        """
+        if not isinstance(time_str, str) or len(time_str) != 1 or time_str not in ('1','2','3','4','5'):
+            self.connection_error.emit("time_control参数无效，应为'1'-'5'中的单字符")
+            return False
+        
+        return self.send_command(time_str)
 
     def stop(self):
         """安全停止线程"""

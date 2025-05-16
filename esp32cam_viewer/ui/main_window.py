@@ -842,10 +842,14 @@ class CameraApp(QMainWindow):
 
     # --- 新增：处理检测完成信号 ---
     @pyqtSlot(int, bool)
-    def on_detection_complete(self, result, is_speed_limit):
+    def on_detection_complete(self, id, seed_tf):
         """处理来自检测线程的检测结果"""
-        self.logger.log(f"检测结果: {result, is_speed_limit}", "DEBUG")
-
+        self.logger.log(f"检测结果: {id, seed_tf}", "DEBUG")
+        if seed_tf and  self.control_thread and self.control_thread.is_connected:
+            self.control_thread.time_control(str(3))
+        else:
+            self.logger.log("检测线程反馈_绑定端口失败", "ERROR")
+        self.cleanup_detection()
 
     # --- 新增：处理检测错误信号 ---
     @pyqtSlot(str)
@@ -863,7 +867,6 @@ class CameraApp(QMainWindow):
         self.logger.log(f"检测状态更新: {status_message}", "DEBUG")
         if status_message == "检测线程停止":
             self.cleanup_detection()
-
 
     # --- 新增：检测线程清理辅助函数 ---
     def cleanup_detection(self):
